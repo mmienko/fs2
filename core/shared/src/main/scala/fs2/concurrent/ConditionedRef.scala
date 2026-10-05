@@ -79,6 +79,8 @@ private[fs2] object ConditionedRef {
     def modify[B](f: A => (A, B)): F[B] =
       state.flatModify { s => // uncancellable to avoid losing wake-up signals
         val (value, result) = f(s.value)
+        // Scan first instead of calling partition to avoid extra allocations which have a small impact on perf.
+        // This optimizes for the case where writes infrequently trigger wake-ups.
         if (!s.waiters.exists(_.accepts(value)))
           State(value = value, waiters = s.waiters) -> result.pure[F]
         else {
