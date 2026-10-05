@@ -1520,116 +1520,6 @@ final class Stream[+F[_], +O] private[fs2] (private[fs2] val underlying: Pull[F,
   def groupWithin[F2[x] >: F[x]](
       chunkSize: Int,
       timeout: FiniteDuration
-  )(implicit F: Temporal[F2]): Stream[F2, Chunk[O]] = {
-
-    case class JunctionBuffer[T](
-        data: Vector[T],
-        endOfSupply: Option[Either[Throwable, Unit]],
-        endOfDemand: Option[Either[Throwable, Unit]]
-    ) {
-      def splitAt(n: Int): (JunctionBuffer[T], JunctionBuffer[T]) =
-        if (this.data.size >= n) {
-          val (head, tail) = this.data.splitAt(n.toInt)
-          (this.copy(tail), this.copy(head))
-        } else {
-          (this.copy(Vector.empty), this)
-        }
-    }
-
-    val outputLong = chunkSize.toLong
-    fs2.Stream.force {
-      for {
-        demand <- Semaphore[F2](outputLong)
-        supply <- Semaphore[F2](0L)
-        buffer <- Ref[F2].of(
-          JunctionBuffer[O](Vector.empty[O], endOfSupply = None, endOfDemand = None)
-        )
-      } yield {
-        /* - Buffer: stores items from input to be sent on next output chunk
-         * - Demand Semaphore: to avoid adding too many items to buffer
-         * - Supply: counts filled positions for next output chunk */
-        def enqueue(t: O): F2[Boolean] =
-          for {
-            _ <- demand.acquire
-            buf <- buffer.modify(buf => (buf.copy(buf.data :+ t), buf))
-            _ <- supply.release
-          } yield buf.endOfDemand.isEmpty
-
-        val dequeueNextOutput: F2[Option[Vector[O]]] = {
-          // Trigger: waits until the supply buffer is full (with acquireN)
-          val waitSupply = supply.acquireN(outputLong).guaranteeCase {
-            case Outcome.Succeeded(_) => supply.releaseN(outputLong)
-            case _                    => F.unit
-          }
-
-          val onTimeout: F2[Long] =
-            for {
-              _ <- supply.acquire // waits until there is at least one element in buffer
-              m <- supply.available
-              k = m.min(outputLong - 1)
-              b <- supply.tryAcquireN(k)
-            } yield if (b) k + 1 else 1
-
-          // in JS cancellation doesn't always seem to run, so race conditions should restore state on their own
-          for {
-            acq <- F.race(F.sleep(timeout), waitSupply).flatMap {
-              case Left(_)  => onTimeout
-              case Right(_) => supply.acquireN(outputLong).as(outputLong)
-            }
-            buf <- buffer.modify(_.splitAt(acq.toInt))
-            _ <- demand.releaseN(buf.data.size.toLong)
-            res <- buf.endOfSupply match {
-              case Some(Left(error))                  => F.raiseError(error)
-              case Some(Right(_)) if buf.data.isEmpty => F.pure(None)
-              case _                                  => F.pure(Some(buf.data))
-            }
-          } yield res
-        }
-
-        def endSupply(result: Either[Throwable, Unit]): F2[Unit] =
-          buffer.update(_.copy(endOfSupply = Some(result))) *> supply.releaseN(
-            // enough supply for 2 iterations of the race loop in case of upstream
-            // interruption: so that downstream can terminate immediately
-            outputLong * 2
-          )
-
-        def endDemand(result: Either[Throwable, Unit]): F2[Unit] =
-          buffer.update(_.copy(endOfDemand = Some(result))) *> demand.releaseN(Int.MaxValue)
-
-        def toEnding(ec: ExitCase): Either[Throwable, Unit] = ec match {
-          case ExitCase.Succeeded  => Right(())
-          case ExitCase.Errored(e) => Left(e)
-          case ExitCase.Canceled   => Right(())
-        }
-
-        val enqueueAsync = F.start {
-          this
-            .evalMap(enqueue)
-            .forall(identity)
-            .onFinalizeCase(ec => endSupply(toEnding(ec)))
-            .compile
-            .drain
-        }
-
-        val outputStream: Stream[F2, Chunk[O]] =
-          Stream
-            .eval(dequeueNextOutput)
-            .repeat
-            .collectWhile { case Some(data) => Chunk.from(data) }
-
-        Stream
-          .bracketCase(enqueueAsync) { case (upstream, exitCase) =>
-            endDemand(toEnding(exitCase)) *> upstream.cancel
-          } >> outputStream
-      }
-    }
-  }
-
-  /** Like [[groupWithin]], but works on chunks for better performance.
-    */
-  def groupChunksWithin[F2[x] >: F[x]](
-      chunkSize: Int,
-      timeout: FiniteDuration
   )(implicit F: Temporal[F2]): Stream[F2, Chunk[O]] =
     Stream.force {
       require(chunkSize > 0, s"chunkSize must be > 0, but got ${chunkSize.toString}")
@@ -1662,11 +1552,11 @@ final class Stream[+F[_], +O] private[fs2] (private[fs2] val underlying: Pull[F,
         }
 
         // None means upstream is done, and the buffer is drained.
-        def takeOrExit(all: Boolean): F2[Option[Chunk[O]]] =
+        def takeOrExit(timedOut: Boolean): F2[Option[Chunk[O]]] =
           buffer.modify { b =>
-            if (b.nonEmpty && (all || b.isDone)) take(b, n = b.size)
-            // Take all potential batches so that producer doesn't need to wait for timeout
+            if (b.nonEmpty && b.isDone) take(b, n = b.size)
             else if (b.isFull) take(b, n = b.size - b.size % chunkSize)
+            else if (b.nonEmpty && timedOut) take(b, n = b.size)
             else
               b -> (b.done match {
                 case None /* not full & no-timeout */ => Skip
@@ -1675,20 +1565,20 @@ final class Stream[+F[_], +O] private[fs2] (private[fs2] val underlying: Pull[F,
               })
           }.flatten
 
-        val onTimeout = takeOrExit(all = true).flatMap {
+        val onTimeout = takeOrExit(timedOut = true).flatMap {
           case Some(batch) if batch.isEmpty =>
-            buffer.waitUntil(b => b.nonEmpty || b.isDone) >> takeOrExit(all = true)
+            buffer.waitUntil(b => b.nonEmpty || b.isDone) >> takeOrExit(timedOut = true)
           case result => result.pure[F2]
         }
 
         val nextBatch: F2[Option[Chunk[O]]] =
           // Potentially skip starting timer fiber if buffer is full
-          takeOrExit(all = false).flatMap {
+          takeOrExit(timedOut = false).flatMap {
             case Some(batch) if batch.isEmpty =>
               F.race(F.sleep(timeout), buffer.waitUntil(b => b.isFull || b.isDone))
                 .flatMap {
                   case Left(_ /* timeout */ )             => onTimeout
-                  case Right(_ /* full batch or done */ ) => takeOrExit(all = false)
+                  case Right(_ /* full batch or done */ ) => takeOrExit(timedOut = false)
                 }
             case result => result.pure[F2]
           }
