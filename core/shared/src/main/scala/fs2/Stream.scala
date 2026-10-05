@@ -1695,7 +1695,7 @@ final class Stream[+F[_], +O] private[fs2] (private[fs2] val underlying: Pull[F,
 
         def emitBatches: Pull[F2, Chunk[O], Unit] =
           Pull.eval(nextBatch).flatMap {
-            case Some(batch) => Pull.output(Chunk.from(batch.grouped(chunkSize))) >> emitBatches
+            case Some(batch) => Pull.output(batch.grouped(chunkSize)) >> emitBatches
             case None        => Pull.done
           }
 
