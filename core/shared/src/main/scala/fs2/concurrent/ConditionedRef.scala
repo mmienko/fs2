@@ -95,14 +95,12 @@ private[fs2] object ConditionedRef {
         else
           F.deferred[Unit].flatMap { wake =>
             val waiter = new Waiter(accepts = p, wake = wake)
-            F.uncancelable { poll =>
-              state.modify { s =>
-                if (p(s.value)) s -> F.unit
-                else
-                  s.register(waiter) -> poll(wake.get).onCancel {
-                    state.update(_.deregister(waiter))
-                  }
-              }.flatten
+            state.flatModifyFull { (poll, s) =>
+              if (p(s.value)) s -> F.unit
+              else
+                s.register(waiter) -> poll(wake.get).onCancel {
+                  state.update(_.deregister(waiter))
+                }
             }
           }
       }
