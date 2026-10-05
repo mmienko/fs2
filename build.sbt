@@ -5,7 +5,7 @@ Global / onChangedBuildSource := ReloadOnSourceChanges
 // Workaround for https://github.com/scala-native/scala-native/issues/2024
 Global / concurrentRestrictions += Tags.limit(NativeTags.Link, 1)
 
-ThisBuild / tlBaseVersion := "3.13"
+ThisBuild / tlBaseVersion := "3.14"
 
 ThisBuild / organization := "co.fs2"
 ThisBuild / organizationName := "Functional Streams for Scala"
@@ -364,6 +364,32 @@ ThisBuild / mimaBinaryIssueFilters ++= Seq(
   ),
   ProblemFilters.exclude[InheritedNewAbstractMethodProblem](
     "fs2.io.net.tls.TLSContext#Builder.fs2$io$net$tls$TLSContextCompanionPlatform$BuilderPlatform$$$outer"
+  ),
+  // Process stream redirection: #3170
+  ProblemFilters.exclude[ReversedMissingMethodProblem]("fs2.io.process.ProcessBuilder.stdin"),
+  ProblemFilters.exclude[ReversedMissingMethodProblem]("fs2.io.process.ProcessBuilder.stdout"),
+  ProblemFilters.exclude[ReversedMissingMethodProblem]("fs2.io.process.ProcessBuilder.stderr"),
+  ProblemFilters.exclude[ReversedMissingMethodProblem](
+    "fs2.io.process.ProcessBuilder.redirectErrorStream"
+  ),
+  ProblemFilters.exclude[ReversedMissingMethodProblem]("fs2.io.process.ProcessBuilder.withStdin"),
+  ProblemFilters.exclude[ReversedMissingMethodProblem]("fs2.io.process.ProcessBuilder.withStdout"),
+  ProblemFilters.exclude[ReversedMissingMethodProblem]("fs2.io.process.ProcessBuilder.withStderr"),
+  ProblemFilters.exclude[ReversedMissingMethodProblem](
+    "fs2.io.process.ProcessBuilder.withRedirectErrorStream"
+  ),
+  ProblemFilters.exclude[ReversedMissingMethodProblem](
+    "fs2.io.process.ProcessBuilder.inheritStdio"
+  ),
+  ProblemFilters.exclude[DirectMissingMethodProblem](
+    "fs2.io.process.ProcessBuilder#ProcessBuilderImpl.copy"
+  ),
+  ProblemFilters.exclude[DirectMissingMethodProblem](
+    "fs2.io.process.ProcessBuilder#ProcessBuilderImpl.this"
+  ),
+  ProblemFilters.exclude[MissingTypesProblem]("fs2.io.process.ProcessBuilder$ProcessBuilderImpl$"),
+  ProblemFilters.exclude[DirectMissingMethodProblem](
+    "fs2.io.process.ProcessBuilder#ProcessBuilderImpl.apply"
   )
 )
 
