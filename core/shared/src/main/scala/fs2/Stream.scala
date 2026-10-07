@@ -1487,13 +1487,16 @@ final class Stream[+F[_], +O] private[fs2] (private[fs2] val underlying: Pull[F,
     go(None, this).stream
   }
 
-  /** Splits this stream into a stream of chunks of elements, such that
+  /** Splits this stream into a stream of chunks of elements, such that:
+    *
     * 1. each chunk in the output has at most `outputSize` elements, and
+    *
     * 2. the concatenation of those chunks, which is obtained by calling
     *    `unchunks`, yields the same element sequence as this stream.
     *
-    * As `this` stream emits input elements, the result stream them in a
-    * waiting buffer, until it has enough elements to emit next chunk.
+    * As `this` stream emits input elements, the result stream accumulates
+    * them in a waiting buffer, until it has enough elements to emit the
+    * next chunk. Accumulation acts on chunks of input elements for efficiency.
     *
     * To avoid holding input elements for too long, this method takes a
     * `timeout`. This timeout is reset after each output chunk is emitted.
